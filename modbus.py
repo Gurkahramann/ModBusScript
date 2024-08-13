@@ -8,22 +8,29 @@ from pymodbus.device import ModbusDeviceIdentification
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSlaveContext, ModbusServerContext
 import signal
 import sys
-import os
 import configparser
 
+# Flask uygulaması oluştur
 app = Flask(__name__)
-modbus_ip = "0.0.0.0"
+
+# Modbus port numarası
 modbus_port = 502
+
+# Mevcut değer ve çalışma durumu değişkenleri
 current_value = None
 running = True
 ser = None
+
+# Konfigürasyon dosyası yolu
 config_path = "C:/config.ini"  # İstenilen yola ayarlanabilir
 
 def get_com_port():
-    ip_address = get_local_ip()  # Lokal IP adresini al
+    # Lokal IP adresini al
+    ip_address = get_local_ip()
     default_com_port = "COM1"
     config = configparser.ConfigParser()
     try:
+        # Konfigürasyon dosyasını oku
         config.read(config_path)
         if config.has_section('COM_PORTS') and ip_address in config['COM_PORTS']:
             return config['COM_PORTS'][ip_address]
@@ -32,6 +39,7 @@ def get_com_port():
     return default_com_port
 
 def get_local_ip():
+    # Lokal IP adresini al
     import socket
     return socket.gethostbyname(socket.gethostname())
 
@@ -49,6 +57,7 @@ store = ModbusSlaveContext(
 )
 context = ModbusServerContext(slaves=store, single=True)
 
+# Modbus cihaz kimlik bilgilerini ayarla
 identity = ModbusDeviceIdentification()
 identity.VendorName = 'EZM-9920'
 identity.ProductCode = '9920'
@@ -58,12 +67,15 @@ identity.MajorMinorRevision = '1.0'
 
 def update_data_block(value):
     try:
+        # Gelen değeri float'a çevir ve ölçekle
         value_float = float(value)
         value_int = int(value_float * 100)  # Değeri integer olarak saklamak için ölçekleyin
         if value_float < 0:
+            # Negatif değerler için
             context[0].setValues(3, 0, [0])  # 1. adrese 0 yaz
             context[0].setValues(3, 1, [abs(value_int)])  # 2. adrese mutlak değeri yaz
         else:
+            # Pozitif değerler için
             context[0].setValues(3, 0, [value_int])  # 1. adrese değeri yaz
             context[0].setValues(3, 1, [0])  # 2. adrese 0 yaz
     except Exception as e:
@@ -71,8 +83,9 @@ def update_data_block(value):
         return None  # Hata durumunda None döndür
 
 def send_command(ser, command):
+    # Seri port üzerinden komut gönder
     ser.write(command.encode())
-    time.sleep(1)
+    time.sleep(0.5)
     if ser.in_waiting > 0:
         data = ser.read(ser.in_waiting)
         try:
@@ -94,21 +107,20 @@ def start_serial_communication():
     max_attempts = 2
     while attempts < max_attempts:
         try:
+            # Seri portu aç
             ser = serial.Serial(com_port, baud_rate, timeout=timeout, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, bytesize=serial.EIGHTBITS)
             print(f"{com_port} portu açıldı.")
             break
         except serial.SerialException as e:
             print(f"{com_port} portu açılırken hata: {e}")
+            if com_port == "COM1":
+                print("COM1 portu da bulunamadı. İletişim sağlanamıyor.")
+                ser = None
+                break
+            else:
+                print(f"{com_port} portu bulunamadı. Varsayılan olarak COM1 başlatılıyor.")
+                com_port = "COM1"
             attempts += 1
-            if attempts >= max_attempts:
-                com_port = "COM1"  # Varsayılan COM1 portuna geç
-                try:
-                    ser = serial.Serial(com_port, baud_rate, timeout=timeout, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, bytesize=serial.EIGHTBITS)
-                    print(f"{com_port} portu açıldı.")
-                except serial.SerialException as e:
-                    print(f"{com_port} portu açılırken hata: {e}")
-                    ser = None
-                    break
 
     if ser:
         try:
@@ -121,14 +133,12 @@ def start_serial_communication():
         finally:
             ser.close()
             print(f"{com_port} portu kapatıldı.")
-
 def read_from_modbus_client():
     global running
     global current_value
-    client = ModbusClient(host="localhost", port=502, auto_open=True)
+    client = ModbusClient(host=get_local_ip(), port=502, auto_open=True)
     while running:
         if client.is_open:
-            
             # Modbus'tan gelen veriyi oku
             regs = client.read_holding_registers(0, 2)  # 0 ve 1. adreslerdeki verileri oku
 
@@ -150,7 +160,7 @@ def read_from_modbus_client():
                 print(f"Modbus'tan okunan değer: {value}")
         else:
             client.open()
-        time.sleep(1)
+        time.sleep(0.5)
 
 @app.route('/reset', methods=['GET'])
 def reset_counter():
@@ -159,7 +169,7 @@ def reset_counter():
     return jsonify({'result': 'Sayaç sıfırlandı'})
 
 def start_modbus_server():
-    server = ModbusServer(host=modbus_ip, port=modbus_port, no_block=True)
+    server = ModbusServer(host=get_local_ip(), port=modbus_port, no_block=True)
     print("Modbus TCP sunucusu başlatılıyor...")
     server.start()
 
@@ -186,5 +196,7 @@ if __name__ == "__main__":
     # Modbus client iletişimini başlat
     modbus_client_thread = Thread(target=read_from_modbus_client)
     modbus_client_thread.start()
-
-    app.run(host='0.0.0.0', port=5001)
+    
+    # Flask uygulamasını başlat
+    local_ip = get_local_ip()
+    app.run(host=local_ip, port=5001)
